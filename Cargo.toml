@@ -1,0 +1,19 @@
+[package]
+name = "rust_cli_wallet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitcoin = { version = "0.32.0", features = ["rand"] }
+secp256k1 = { version = "0.28.0", features = ["rand"] }
+reqwest = { version = "0.11", features = ["json"] }
+rand = "0.8.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "2.0.12"
+hex = "0.4.3"
+bip39 = "2.0.0"
+
+[dev-dependencies]
+tempfile = "3.8"

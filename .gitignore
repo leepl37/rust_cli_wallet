@@ -1,0 +1,29 @@
+# Wallet files (contain sensitive private keys)
+*.json
+!Cargo.toml
+!Cargo.lock
+
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
