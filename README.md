@@ -44,55 +44,6 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
    cargo run
    ```
 
-## 📖 Usage
-
-### Creating a New Wallet
-
-```rust
-use std::path::Path;
-
-// Create a new wallet with a mnemonic phrase
-let mut wallet = Wallet::new();
-wallet.initialize_with_seed("your twelve word mnemonic phrase here").await?;
-
-// Save the wallet to disk
-wallet.save(Path::new("my_wallet.json"))?;
-```
-
-### Recovering a Wallet
-
-```rust
-// Load an existing wallet
-let mut wallet = Wallet::load_from_file(Path::new("my_wallet.json"))?;
-
-// Or recover from mnemonic (uses gap limit scanning)
-wallet.initialize_with_seed("your mnemonic phrase").await?;
-```
-
-### Generating Addresses
-
-```rust
-// Generate a new address
-let new_address = wallet.get_new_address()?;
-println!("New address: {}", new_address);
-
-// Display all addresses and balances
-wallet.display_all();
-```
-
-### Sending Transactions
-
-```rust
-// Send Bitcoin to another address
-let txid = wallet.sign_and_send_transaction(
-    "destination_address_here",
-    100_000,  // 0.001 BTC in satoshis
-    5         // Fee rate in sat/byte
-).await?;
-
-println!("Transaction sent! TXID: {}", txid);
-```
-
 ## 🏗️ Architecture
 
 ### Core Components
@@ -161,14 +112,6 @@ Run with verbose output:
 cargo test -- --nocapture
 ```
 
-## 📚 API Documentation
-
-Generate documentation:
-
-```bash
-cargo doc --open
-```
-
 ## 🔧 Configuration
 
 ### Network Selection
@@ -191,16 +134,7 @@ const GAP_LIMIT: u32 = 20; // Change this value
 - [ ] Multi-signature wallets
 - [ ] Hardware wallet integration
 - [ ] Lightning Network support
-- [ ] Web interface
-- [ ] Mobile app
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
 
 ## 📄 License
 
