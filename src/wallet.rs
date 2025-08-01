@@ -48,6 +48,7 @@ use std::path::Path;
 use serde::{Serialize, Deserialize};
 use std::error::Error as StdError;
 use std::str::FromStr;
+use super::multisig;
 use bitcoin::{
     Address, Network, PrivateKey, ScriptBuf, Transaction as BitcoinTransaction,
     TxIn, TxOut, secp256k1::{Message, Secp256k1},
@@ -140,6 +141,7 @@ impl std::fmt::Display for WalletAddress {
 /// - Mnemonic phrase storage for wallet recovery
 /// - Automatic address indexing and management
 /// - Serialization support for persistent storage
+/// - Multi-signature wallet support
 /// 
 /// # Security Considerations
 /// - The mnemonic phrase is stored in plain text for wallet recovery
@@ -151,6 +153,8 @@ pub struct Wallet {
     pub addresses: Vec<WalletAddress>,
     /// Next address index to generate (incremented after each new address)
     pub next_index: u32,
+    /// Next multi-signature index to generate (incremented after each new multi-sig wallet)
+    pub next_multisig_index: u32,
     /// BIP39 mnemonic phrase for wallet recovery and consistent address generation
     /// 
     /// This field is optional and may be None for wallets created without
@@ -158,6 +162,8 @@ pub struct Wallet {
     /// generation and wallet recovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
+    /// List of multi-signature wallets
+    pub multisig_wallets: Vec<multisig::MultiSigWallet>,
 }
 
 impl Wallet {
@@ -172,11 +178,46 @@ impl Wallet {
     /// 
     /// # Returns
     /// * `Ok(Wallet)` - The loaded wallet if successful
-    /// * `Err` - If the file doesn't exist, is invalid JSON, or can't be read
+    /// * `Err` - If the file doesn't exist, is invalid JSON, or cantbe read
     pub fn load_from_file(path: &Path) -> Result<Self, Box<dyn StdError>> {
         let json = fs::read_to_string(path)?;
-        let wallet: Wallet = serde_json::from_str(&json)?;
-        Ok(wallet)
+        match serde_json::from_str::<Wallet>(&json) {
+            Ok(wallet) => Ok(wallet),
+            Err(e) => {
+                // Try to migrate from old format
+                if let Ok(migrated_wallet) = Self::migrate_from_old_format(&json) {
+                    println!("✅ Successfully migrated wallet from old format to new format with multi-signature support.");
+                    Ok(migrated_wallet)
+                } else {
+                    let error_msg = format!("Failed to parse wallet file: {}. This may be due to an incompatible wallet format. Please check if the wallet file structure matches the expected format.", e);
+                    Err(error_msg.into())
+                }
+            }
+        }
+    }
+    
+    /// Migrates wallet from old format (without multisig_wallets) to new format
+    fn migrate_from_old_format(json: &str) -> Result<Self, Box<dyn StdError>> {
+        // Define the old wallet structure
+        #[derive(serde::Deserialize)]
+        struct OldWallet {
+            pub addresses: Vec<WalletAddress>,
+            pub next_index: u32,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            pub mnemonic: Option<String>,
+        }
+        
+        // Try to parse as old format
+        let old_wallet: OldWallet = serde_json::from_str(json)?;
+        
+        // Convert to new format by adding empty multisig_wallets
+        Ok(Wallet {
+            addresses: old_wallet.addresses,
+            next_index: old_wallet.next_index,
+            next_multisig_index: 0, // Default for migrated wallets
+            mnemonic: old_wallet.mnemonic,
+            multisig_wallets: Vec::new(),
+        })
     }
 
     /// Saves the wallet to a JSON file on disk.
@@ -213,6 +254,8 @@ impl Wallet {
     /// # Returns
     /// * `Some(&WalletAddress)` - The address if the index is valid
     /// * `None` - If the index is out of bounds
+    /// 
+
     pub fn get_address(&self, index: usize) -> Option<&WalletAddress> {
         self.addresses.get(index)
     }
@@ -1256,6 +1299,372 @@ impl std::fmt::Display for WalletError {
 
 impl std::error::Error for WalletError {}
 
+impl Wallet {
+    /// Creates a new multi-signature wallet
+    /// 
+    /// # Arguments
+    /// * `name` - Human-readable name for the wallet
+    /// * `public_keys` - List of all cosigner public keys
+    /// * `required_signatures` - Number of signatures required to spend
+    /// * `my_private_keys` - Your own private keys (public_key -> private_key mapping)
+    /// * `network` - Bitcoin network (testnet/mainnet)
+    /// 
+    /// # Returns
+    /// * `Ok(String)` - The ID of the created multi-sig wallet
+    /// * `Err` - If the configuration is invalid
+    pub fn create_multisig_wallet(
+        &mut self,
+        name: String,
+        public_keys: Vec<String>,
+        required_signatures: u8,
+        my_private_keys: std::collections::HashMap<String, String>,
+        network: bitcoin::Network,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        // Use the next available index and increment it
+        let index = self.next_multisig_index;
+        self.next_multisig_index += 1;
+        
+        let multisig_wallet = multisig::MultiSigWallet::new(
+            name,
+            public_keys,
+            required_signatures,
+            my_private_keys,
+            network,
+            index,
+        )?;
+        
+        let wallet_id = multisig_wallet.id.clone();
+        self.multisig_wallets.push(multisig_wallet);
+        
+        Ok(wallet_id)
+    }
+    
+    /// Gets a multi-signature wallet by ID
+    /// 
+    /// # Arguments
+    /// * `id` - The wallet ID to retrieve
+    /// 
+    /// # Returns
+    /// * `Some(&MultiSigWallet)` - The wallet if found
+    /// * `None` - If the wallet doesn't exist
+    pub fn get_multisig_wallet(&self, id_or_address: &str) -> Option<&multisig::MultiSigWallet> {
+        // Try to find by wallet ID first
+        if let Some(w) = self.multisig_wallets.iter().find(|w| w.id == id_or_address) {
+            return Some(w);
+        }
+        // If not found, try to find by address (case-insensitive)
+        self.multisig_wallets.iter().find(|w| w.address.eq_ignore_ascii_case(id_or_address))
+    }
+    
+    /// Gets all multi-signature wallets
+    /// 
+    /// # Returns
+    /// List of all multi-signature wallets
+    #[allow(dead_code)]
+    pub fn get_all_multisig_wallets(&self) -> &[multisig::MultiSigWallet] {
+        &self.multisig_wallets
+    }
+    
+    /// Gets the total number of multi-signature wallets
+    /// 
+    /// # Returns
+    /// Number of multi-signature wallets
+    pub fn multisig_wallet_count(&self) -> usize {
+        self.multisig_wallets.len()
+    }
+    
+    /// Removes a multi-signature wallet
+    /// 
+    /// # Arguments
+    /// * `id` - The wallet ID to remove
+    /// 
+    /// # Returns
+    /// * `true` - If the wallet was removed
+    /// * `false` - If the wallet wasn't found
+    pub fn remove_multisig_wallet(&mut self, id: &str) -> bool {
+        let initial_len = self.multisig_wallets.len();
+        self.multisig_wallets.retain(|w| w.id != id);
+        self.multisig_wallets.len() < initial_len
+    }
+    
+    /// Gets the total balance across all multi-signature wallets
+    /// 
+    /// # Returns
+    /// Total balance in satoshis
+    #[allow(dead_code)]
+    pub fn get_total_multisig_balance(&self) -> u64 {
+        self.multisig_wallets.iter().map(|w| w.get_balance()).sum()
+    }
+    
+    /// Lists all multi-signature wallets with their details
+    /// 
+    /// # Returns
+    /// Formatted string with all multi-sig wallet information
+    pub fn list_multisig_wallets(&self) -> String {
+        if self.multisig_wallets.is_empty() {
+            return "No multi-signature wallets found.".to_string();
+        }
+        
+        let mut result = String::new();
+        result.push_str("Multi-Signature Wallets:\n");
+        result.push_str("========================\n\n");
+        
+        for (i, wallet) in self.multisig_wallets.iter().enumerate() {
+            result.push_str(&format!("{}. {}\n", i + 1, wallet));
+            result.push_str(&format!("   ID: {}\n", wallet.id));
+            result.push_str(&format!("   Balance: {} satoshis\n", wallet.get_balance()));
+            result.push_str(&format!("   Can Sign: {}\n", wallet.can_sign()));
+            result.push_str(&format!("   My Keys: {}\n", wallet.my_key_count()));
+            result.push_str(&format!("   Public Keys: {}\n", wallet.public_keys.len()));
+            result.push('\n');
+        }
+        
+        result
+    }
+    
+    /// Creates a new multi-signature transaction
+    /// 
+    /// This function creates a transaction that requires multiple signatures
+    /// to spend funds from a multi-signature wallet.
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - The ID of the multi-signature wallet
+    /// * `dest_address` - The destination address to send funds to
+    /// * `amount` - The amount to send in satoshis
+    /// * `fee_rate` - The fee rate in satoshis per byte
+    /// 
+    /// # Returns
+    /// * `Ok(multisig::MultiSigTransaction)` - The transaction ready for signing
+    /// * `Err` - If transaction creation fails
+    pub fn create_multisig_transaction(
+        &self,
+        wallet_id: &str,
+        dest_address: &str,
+        amount: u64,
+        fee_rate: u64,
+    ) -> Result<multisig::MultiSigTransaction, Box<dyn std::error::Error>> {
+        let multisig_wallet = self.get_multisig_wallet(wallet_id)
+            .ok_or("Multi-signature wallet not found")?;
+        
+        multisig_wallet.create_transaction(dest_address, amount, fee_rate)
+    }
+    
+    /// Signs a multi-signature transaction with your private keys
+    /// 
+    /// This function creates signatures for a multi-signature transaction
+    /// using the private keys you control for the specified wallet.
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - The ID of the multi-signature wallet
+    /// * `multisig_tx` - The transaction to sign
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<multisig::PartialSignature>)` - The signatures you created
+    /// * `Err` - If signing fails
+    pub fn sign_multisig_transaction(
+        &self,
+        wallet_id: &str,
+        multisig_tx: &mut multisig::MultiSigTransaction,
+    ) -> Result<Vec<multisig::PartialSignature>, Box<dyn std::error::Error>> {
+        let multisig_wallet = self.get_multisig_wallet(wallet_id)
+            .ok_or("Multi-signature wallet not found")?;
+        
+        multisig_wallet.sign_transaction(multisig_tx)
+    }
+    
+
+    
+    /// Finalizes a multi-signature transaction for broadcasting
+    /// 
+    /// This function combines all signatures and creates the final
+    /// transaction that can be broadcast to the network.
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - The ID of the multi-signature wallet
+    /// * `multisig_tx` - The transaction to finalize
+    /// 
+    /// # Returns
+    /// * `Ok(BitcoinTransaction)` - The finalized transaction
+    /// * `Err` - If finalization fails
+    pub fn finalize_multisig_transaction(
+        &self,
+        wallet_id: &str,
+        multisig_tx: &multisig::MultiSigTransaction,
+    ) -> Result<BitcoinTransaction, Box<dyn std::error::Error>> {
+        let multisig_wallet = self.get_multisig_wallet(wallet_id)
+            .ok_or("Multi-signature wallet not found")?;
+        
+        multisig_wallet.finalize_transaction(multisig_tx)
+    }
+    
+    /// Broadcasts a finalized multi-signature transaction
+    /// 
+    /// This function takes a finalized multi-signature transaction
+    /// and broadcasts it to the Bitcoin network.
+    /// 
+    /// # Arguments
+    /// * `finalized_tx` - The finalized transaction to broadcast
+    /// 
+    /// # Returns
+    /// * `Ok(String)` - The transaction ID (txid) of the broadcast transaction
+    /// * `Err` - If broadcasting fails
+    pub async fn broadcast_multisig_transaction(
+        &self,
+        finalized_tx: &BitcoinTransaction,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let client = reqwest::Client::new();
+        let url = "https://blockstream.info/testnet/api/tx";
+        let tx_hex = serialize_hex(finalized_tx);
+        
+        println!("Broadcasting multi-signature transaction...");
+        println!("Transaction hex: {}", tx_hex);
+        
+        let response = client.post(url)
+            .header("Content-Type", "text/plain")
+            .body(tx_hex)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            println!("Transaction failed: {}", error_text);
+            return Err("Transaction broadcasting failed".into());
+        }
+
+        let txid = finalized_tx.compute_txid();
+        println!("Multi-signature transaction successful!");
+        println!("Transaction ID: {}", txid);
+        Ok(txid.to_string())
+    }
+    
+    /// Updates the balance of a multi-signature wallet
+    /// 
+    /// This function fetches the current UTXOs for a multi-signature wallet
+    /// from the blockchain and updates the wallet's balance.
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - The ID of the multi-signature wallet to update
+    /// 
+    /// # Returns
+    /// * `Ok(())` - If the balance was updated successfully
+    /// * `Err` - If the update fails
+    pub async fn update_multisig_balance(
+        &mut self,
+        wallet_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let multisig_wallet = self.get_multisig_wallet(wallet_id)
+            .ok_or("Multi-signature wallet not found")?;
+        
+        let client = reqwest::Client::new();
+        let url = format!("https://blockstream.info/testnet/api/address/{}/utxo", multisig_wallet.address);
+        
+        println!("Updating balance for multi-signature wallet: {}", multisig_wallet.name);
+        println!("Address: {}", multisig_wallet.address);
+        
+        let response = client.get(&url).send().await?;
+        
+        if response.status().is_success() {
+            let utxos: Vec<Utxo> = response.json().await?;
+            println!("Found {} UTXOs for multi-signature wallet", utxos.len());
+            
+            // Update the wallet's UTXOs
+            if let Some(wallet) = self.multisig_wallets.iter_mut().find(|w| w.id == wallet_id) {
+                wallet.utxos = utxos;
+            }
+        } else {
+            println!("No UTXOs found for multi-signature wallet");
+            if let Some(wallet) = self.multisig_wallets.iter_mut().find(|w| w.id == wallet_id) {
+                wallet.utxos = Vec::new();
+            }
+        }
+        
+        // Save the updated wallet
+        self.save_to_file(Path::new("wallet.json"))?;
+        println!("✅ Multi-signature wallet balance updated!");
+        
+        Ok(())
+    }
+    
+    /// Exports a multi-signature wallet configuration for sharing with other cosigners
+    /// 
+    /// This function creates a configuration file that can be safely shared with other
+    /// cosigners. The configuration excludes private keys for security and includes
+    /// all necessary information to recreate the multi-signature wallet.
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - The ID of the multi-signature wallet to export
+    /// 
+    /// # Returns
+    /// * `Ok(multisig::MultiSigConfig)` - The configuration that can be shared
+    /// * `Err` - If the wallet is not found or cannot be exported
+    pub fn export_multisig_config(
+        &self,
+        wallet_id: &str,
+    ) -> Result<multisig::MultiSigConfig, Box<dyn std::error::Error>> {
+        let multisig_wallet = self.get_multisig_wallet(wallet_id)
+            .ok_or("Multi-signature wallet not found")?;
+        
+        multisig_wallet.export_config()
+    }
+    
+    /// Imports a multi-signature wallet configuration from another cosigner
+    /// 
+    /// This function allows you to import a multi-signature wallet configuration
+    /// and add your own private keys to participate in the wallet.
+    /// 
+    /// # Arguments
+    /// * `config` - The imported configuration
+    /// * `my_private_keys` - Your private keys for the public keys you control
+    /// 
+    /// # Returns
+    /// * `Ok(String)` - The ID of the imported multi-signature wallet
+    /// * `Err` - If the configuration is invalid or cannot be imported
+    #[allow(dead_code)]
+    pub fn import_multisig_config(
+        &mut self,
+        config: multisig::MultiSigConfig,
+        my_private_keys: std::collections::HashMap<String, String>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let multisig_wallet = multisig::MultiSigWallet::from_config(config, my_private_keys)?;
+        
+        let wallet_id = multisig_wallet.id.clone();
+        self.multisig_wallets.push(multisig_wallet);
+        
+        Ok(wallet_id)
+    }
+    
+    /// Imports a multi-signature wallet configuration and automatically updates its balance
+    /// 
+    /// This function imports a multi-signature wallet configuration and immediately
+    /// fetches the current balance from the blockchain to ensure the wallet shows
+    /// the correct balance after import.
+    /// 
+    /// # Arguments
+    /// * `config` - The imported configuration
+    /// * `my_private_keys` - Your private keys for the public keys you control
+    /// 
+    /// # Returns
+    /// * `Ok(String)` - The ID of the imported multi-signature wallet
+    /// * `Err` - If the configuration is invalid or cannot be imported
+    pub async fn import_multisig_config_with_balance(
+        &mut self,
+        config: multisig::MultiSigConfig,
+        my_private_keys: std::collections::HashMap<String, String>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let multisig_wallet = multisig::MultiSigWallet::from_config(config, my_private_keys)?;
+        
+        let wallet_id = multisig_wallet.id.clone();
+        self.multisig_wallets.push(multisig_wallet);
+        
+        // Automatically update the balance after import
+        self.update_multisig_balance(&wallet_id).await?;
+        
+        Ok(wallet_id)
+    }
+    
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,7 +1675,9 @@ mod tests {
         Wallet {
             addresses: Vec::new(),
             next_index: 0,
+            next_multisig_index: 0,
             mnemonic: Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string()),
+            multisig_wallets: Vec::new(),
         }
     }
 
@@ -1460,7 +1871,9 @@ mod tests {
         let wallet = Wallet {
             addresses: Vec::new(),
             next_index: 0,
+            next_multisig_index: 0,
             mnemonic: None,
+            multisig_wallets: Vec::new(),
         };
         
         let json = serde_json::to_string(&wallet);

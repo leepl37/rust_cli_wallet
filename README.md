@@ -8,6 +8,9 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
 - **BIP44 HD Wallet**: Hierarchical deterministic address generation
 - **Gap Limit Implementation**: Efficient address scanning with configurable gap limits
 - **P2PKH Transaction Signing**: Secure ECDSA signing for legacy Bitcoin addresses
+- **Multi-signature Wallets**: Create and manage 2-of-3, 3-of-5, etc. multi-signature wallets
+- **Multi-signature Transaction Signing**: Sign transactions with multiple cosigners and duplicate detection
+- **Transaction Broadcasting**: Finalize and broadcast multi-signature transactions to the network
 - **UTXO Management**: Real-time balance tracking and UTXO validation
 - **Blockchain Integration**: Direct integration with Bitcoin testnet via Blockstream API
 - **Secure Key Management**: Private keys stored in WIF format with proper cryptographic handling
@@ -131,10 +134,26 @@ const GAP_LIMIT: u32 = 20; // Change this value
 ## 🚀 Future Enhancements
 
 - [ ] SegWit support (P2SH-P2WPKH, P2WPKH)
-- [ ] Multi-signature wallets
 - [ ] Hardware wallet integration
 - [ ] Lightning Network support
+- [ ] Advanced multi-signature features (time-locks, threshold signatures)
 
+
+## 📝 Recent Updates
+
+### v1.2.0 - Multi-signature Feature (Latest)
+- ✅ **Multi-signature Wallet Creation**: Create 2-of-3, 3-of-5, etc. multi-signature wallets
+- ✅ **Transaction Signing**: Sign transactions with multiple cosigners and duplicate detection
+- ✅ **CLI Interface**: Complete menu system for multi-signature operations
+- ✅ **Transaction Broadcasting**: Finalize and broadcast multi-signature transactions
+- ✅ **File Management**: Save/load transaction files for sharing between cosigners
+- ✅ **Enhanced Error Handling**: Clear user feedback and validation
+
+### v1.1.0 - Basic Wallet Features
+- ✅ Basic wallet creation and address generation
+- ✅ Transaction sending and receiving
+- ✅ UTXO management and balance tracking
+- ✅ BIP39 mnemonic support
 
 ## 📄 License
 

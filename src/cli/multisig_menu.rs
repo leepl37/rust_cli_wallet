@@ -1,0 +1,617 @@
+use std::path::Path;
+use std::io::{self, Write};
+use crate::wallet::Wallet;
+use crate::multisig;
+use crate::cli::wallet_setup::enter_public_keys_manually;
+
+pub async fn run_multisig_management(wallet: &mut Wallet, wallet_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::multisig::MultiSigTransaction;
+    let mut last_multisig_tx: Option<MultiSigTransaction> = None;
+    loop {
+        println!("\n=== Multi-signature Wallet Management ===");
+        println!("1. Create a new multi-signature wallet");
+        println!("2. List all multi-signature wallets");
+        println!("3. View multi-signature wallet details");
+        println!("4. Remove multi-signature wallet");
+        println!("5. Update multi-signature wallet balances");
+        println!("6. Export multi-signature wallet configuration");
+        println!("7. Import multi-signature wallet configuration");
+        println!("8. Create multi-signature transaction");
+        println!("9. Broadcast multi-signature transaction");
+        println!("10. Save multi-signature transaction to file");
+        println!("11. Load and sign multi-signature transaction from file");
+        println!("12. Back to main menu");
+        print!("Enter your choice (1-12): ");
+        io::stdout().flush()?;
+        
+        let mut sub_choice = String::new();
+        io::stdin().read_line(&mut sub_choice)?;
+        
+        match sub_choice.trim() {
+            "1" => {
+                // Create a new multi-signature wallet
+                println!("\n=== Create Multi-Signature Wallet ===");
+                
+                // Get wallet name
+                print!("Enter a name for the multi-signature wallet: ");
+                io::stdout().flush()?;
+                let mut name = String::new();
+                io::stdin().read_line(&mut name)?;
+                let name = name.trim().to_string();
+                
+                if name.is_empty() {
+                    println!("Invalid name. Please try again.");
+                    continue;
+                }
+                
+                // Get number of cosigners
+                print!("Enter the number of cosigners (2-15): ");
+                io::stdout().flush()?;
+                let mut cosigners_str = String::new();
+                io::stdin().read_line(&mut cosigners_str)?;
+                let cosigners: u8 = cosigners_str.trim().parse().unwrap_or(0);
+                
+                if !(2..=15).contains(&cosigners) {
+                    println!("Invalid number of cosigners. Must be between 2 and 15.");
+                    continue;
+                }
+                
+                // Get required signatures
+                print!("Enter the number of required signatures (1-{}): ", cosigners);
+                io::stdout().flush()?;
+                let mut required_str = String::new();
+                io::stdin().read_line(&mut required_str)?;
+                let required: u8 = required_str.trim().parse().unwrap_or(0);
+                
+                if !(1..=cosigners).contains(&required) {
+                    println!("Invalid required signatures. Must be between 1 and {}.", cosigners);
+                    continue;
+                }
+                
+                // Update the menu to only have two options
+                println!("\nHow would you like to provide public keys?");
+                println!("1. Generate test keys (for testing only)");
+                println!("2. Enter public keys manually (for real multi-signature)");
+                print!("Enter your choice (1-2): ");
+                io::stdout().flush()?;
+                let mut key_method = String::new();
+                io::stdin().read_line(&mut key_method)?; 
+
+                let mut public_keys = Vec::new();
+                let mut my_private_keys = std::collections::HashMap::new();
+
+                match key_method.trim() {
+                    "1" => { // Generate test keys (for testing only)
+                        println!("\nGenerating {} test keys for demonstration...", cosigners);
+                        for i in 0..cosigners {
+                            let _ = wallet.get_new_address()?;
+                            let addr = wallet.addresses.last().ok_or("Failed to get generated address")?;
+                            let pubkey = addr.public_key.clone();
+                            public_keys.push(pubkey.clone());
+                            // Store private key for the first cosigner (you)
+                            if i == 0 {
+                                my_private_keys.insert(pubkey.clone(), addr.private_key.clone());
+                                println!("  Cosigner {} (You): {}", i + 1, pubkey);
+                            } else {
+                                println!("  Cosigner {}: {}", i + 1, pubkey);
+                            }
+                        }
+                    },
+                    "2" => { // Enter public keys manually (for real multi-signature)
+                        let (keys, priv_keys) = enter_public_keys_manually(cosigners).await?;
+                        public_keys = keys;
+                        my_private_keys = priv_keys;
+                    },
+                    _ => {
+                        println!("Invalid choice. Please try again.");
+                        continue;
+                    }
+                }
+                
+                // Show automatic index information
+                println!("\n=== Multi-Signature Address Index ===");
+                println!("The wallet will automatically use the next available index: {}", wallet.next_multisig_index);
+                println!("This will create a multi-signature address with derivation path: m/45/0/{}'", wallet.next_multisig_index);
+                println!("Each new multi-signature wallet will use the next available index automatically.");
+                
+                // Create the multi-signature wallet
+                match wallet.create_multisig_wallet(
+                    name,
+                    public_keys,
+                    required,
+                    my_private_keys,
+                    bitcoin::Network::Testnet,
+                ) {
+                    Ok(wallet_id) => {
+                        println!("\n✅ Multi-signature wallet created successfully!");
+                        println!("Wallet ID: {}", wallet_id);
+                        if let Some(multisig_wallet) = wallet.get_multisig_wallet(&wallet_id) {
+                            println!("Address: {}", multisig_wallet.address);
+                            println!("Derivation path: {}", multisig_wallet.derivation_path);
+                            println!("Required signatures: {}/{}", multisig_wallet.required_signatures, multisig_wallet.total_signers);
+                            println!("Can sign: {}", multisig_wallet.can_sign());
+                        }
+                        
+                        // Save wallet
+                        wallet.save(wallet_path)?;
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to create multi-signature wallet: {}", e);
+                    }
+                }
+            },
+            "2" => {
+                // List all multi-signature wallets
+                println!("\n=== Multi-Signature Wallets ===");
+                if wallet.multisig_wallet_count() == 0 {
+                    println!("No multi-signature wallets found.");
+                } else {
+                    println!("{}", wallet.list_multisig_wallets());
+                }
+            },
+            "3" => {
+                // View multi-signature wallet details
+                if wallet.multisig_wallet_count() == 0 {
+                    println!("No multi-signature wallets found.");
+                    continue;
+                }
+                
+                println!("\n=== Multi-Signature Wallet Details ===");
+                println!("{}", wallet.list_multisig_wallets());
+                
+                print!("Enter the wallet ID to view details: ");
+                io::stdout().flush()?;
+                let mut wallet_id = String::new();
+                io::stdin().read_line(&mut wallet_id)?;
+                let wallet_id = wallet_id.trim();
+                
+                if let Some(multisig_wallet) = wallet.get_multisig_wallet(wallet_id) {
+                    println!("\n=== Wallet Details ===");
+                    println!("Name: {}", multisig_wallet.name);
+                    println!("ID: {}", multisig_wallet.id);
+                    println!("Address: {}", multisig_wallet.address);
+                    println!("Derivation path: {}", multisig_wallet.derivation_path);
+                    println!("Required signatures: {}/{}", multisig_wallet.required_signatures, multisig_wallet.total_signers);
+                    println!("Balance: {} satoshis", multisig_wallet.get_balance());
+                    println!("Can sign: {}", multisig_wallet.can_sign());
+                    println!("My keys: {}", multisig_wallet.my_key_count());
+                    
+                    println!("\nPublic Keys:");
+                    for (i, pubkey) in multisig_wallet.public_keys.iter().enumerate() {
+                        let is_mine = multisig_wallet.my_private_keys.contains_key(pubkey);
+                        println!("  {}: {}, {}", i + 1, pubkey, if is_mine { "(Yours)" } else { "(Others)" });
+                    }
+                } else {
+                    println!("Wallet not found.");
+                }
+            },
+            "4" => {
+                // Remove multi-signature wallet
+                if wallet.multisig_wallet_count() == 0 {
+                    println!("No multi-signature wallets found.");
+                    continue;
+                }
+                
+                println!("\n=== Remove Multi-Signature Wallet ===");
+                println!("{}", wallet.list_multisig_wallets());
+                
+                print!("Enter the wallet ID to remove: ");
+                io::stdout().flush()?;
+                let mut wallet_id = String::new();
+                io::stdin().read_line(&mut wallet_id)?;
+                let wallet_id = wallet_id.trim();
+                
+                if wallet.remove_multisig_wallet(wallet_id) {
+                    println!("✅ Multi-signature wallet removed successfully!");
+                    wallet.save(wallet_path)?;
+                } else {
+                    println!("❌ Wallet not found or could not be removed.");
+                }
+            },
+            "5" => {
+                // Update multi-signature wallet balances
+                if wallet.multisig_wallet_count() == 0 {
+                    println!("No multi-signature wallets found.");
+                    continue;
+                }
+                
+                println!("\n=== Update Multi-Signature Wallet Balances ===");
+                println!("{}", wallet.list_multisig_wallets());
+                
+                print!("Enter the wallet ID to update: ");
+                io::stdout().flush()?;
+                let mut wallet_id = String::new();
+                io::stdin().read_line(&mut wallet_id)?;
+                let wallet_id = wallet_id.trim();
+                
+                match wallet.update_multisig_balance(wallet_id).await {
+                    Ok(_) => {
+                        println!("✅ Multi-signature wallet balance updated successfully!");
+                        wallet.save(wallet_path)?;
+                    }
+                    Err(e) => println!("❌ Failed to update multi-signature wallet balance: {}", e),
+                }
+            },
+            "6" => {
+                // Export multi-signature wallet configuration
+                if wallet.multisig_wallet_count() == 0 {
+                    println!("No multi-signature wallets found.");
+                    continue;
+                }
+                
+                println!("\n=== Export Multi-Signature Wallet Configuration ===");
+                println!("{}", wallet.list_multisig_wallets());
+                
+                print!("Enter the wallet ID to export: ");
+                io::stdout().flush()?;
+                let mut wallet_id = String::new();
+                io::stdin().read_line(&mut wallet_id)?;
+                let wallet_id = wallet_id.trim();
+                
+                match wallet.export_multisig_config(wallet_id) {
+                    Ok(config) => {
+                        println!("\n✅ Multi-signature wallet configuration exported successfully!");
+                        println!("Configuration details:");
+                        println!("  Name: {}", config.name);
+                        println!("  Address: {}", config.address);
+                        println!("  Required signatures: {}/{}", config.required_signatures, config.total_signers);
+                        println!("  Network: {}", config.network);
+                        println!("  Version: {}", config.version);
+                        println!("  Created: {}", config.created_at);
+                        
+                        // Save configuration to file
+                        print!("Enter filename to save configuration (e.g., multisig_config.json): ");
+                        io::stdout().flush()?;
+                        let mut filename = String::new();
+                        io::stdin().read_line(&mut filename)?;
+                        let filename = filename.trim();
+                        
+                        if !filename.is_empty() {
+                            let json = serde_json::to_string_pretty(&config)?;
+                            std::fs::write(filename, json)?;
+                            println!("✅ Configuration saved to {}", filename);
+                            println!("Share this file with other cosigners to import the multi-signature wallet.");
+                            println!("🔒 Security Note: This file contains only public information and is safe to share.");
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to export multi-signature wallet configuration: {}", e),
+                }
+            },
+            "7" => {
+                
+                // Import multi-signature wallet configuration
+                // NOTE: This is for educational/portfolio purposes only.
+                // In real-world applications, private keys would be derived
+                // from seed phrases or handled by hardware wallets.
+                println!("\n=== Import Multi-Signature Wallet Configuration ===");
+                
+                print!("Enter the configuration file path: ");
+                io::stdout().flush()?;
+                let mut filepath = String::new();
+                io::stdin().read_line(&mut filepath)?;
+                let filepath = filepath.trim();
+                
+                if filepath.is_empty() {
+                    println!("Invalid file path.");
+                    continue;
+                }
+                
+                match std::fs::read_to_string(filepath) {
+                    Ok(json) => {
+                        match serde_json::from_str::<multisig::MultiSigConfig>(&json) {
+                            Ok(config) => {
+                                println!("\nConfiguration loaded successfully!");
+                                println!("  Name: {}", config.name);
+                                println!("  Address: {}", config.address);
+                                println!("  Required signatures: {}/{}", config.required_signatures, config.total_signers);
+                                println!("  Network: {}", config.network);
+                                println!("  Public keys: {}", config.public_keys.len());
+                                
+                                // Get private keys for the public keys you control
+                                println!("\nEnter your private keys for the public keys you control:");
+                                let mut my_private_keys = std::collections::HashMap::new();
+                                
+                                for (i, pubkey) in config.public_keys.iter().enumerate() {
+                                    print!("Do you have the private key for public key {}? (y/n): ", i + 1);
+                                    io::stdout().flush()?;
+                                    let mut has_key = String::new();
+                                    io::stdin().read_line(&mut has_key)?;
+                                    
+                                    if has_key.trim().to_lowercase() == "y" {
+                                        print!("Enter the private key (WIF format): ");
+                                        io::stdout().flush()?;
+                                        let mut privkey = String::new();
+                                        io::stdin().read_line(&mut privkey)?;
+                                        let privkey = privkey.trim().to_string();
+                                        
+                                        if !privkey.is_empty() {
+                                            // Validate that the private key matches the public key
+                                            match bitcoin::PrivateKey::from_wif(&privkey) {
+                                                Ok(private_key) => {
+                                                    let secp = bitcoin::secp256k1::Secp256k1::new();
+                                                    let derived_public_key = private_key.public_key(&secp);
+                                                    if derived_public_key.to_string() != *pubkey {
+                                                        println!("❌ Error: Private key does not match public key {}", i + 1);
+                                                        println!("   Expected: {}", pubkey);
+                                                        println!("   Got:      {}", derived_public_key);
+                                                        continue;
+                                                    }
+                                                    
+                                                    my_private_keys.insert(pubkey.clone(), privkey);
+                                                    println!("✅ Added private key for public key {}", i + 1);
+                                                }
+                                                Err(_) => {
+                                                    println!("❌ Error: Invalid private key format for public key {}", i + 1);
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Import the configuration with automatic balance update
+                                match wallet.import_multisig_config_with_balance(config, my_private_keys).await {
+                                    Ok(wallet_id) => {
+                                        println!("\n✅ Multi-signature wallet imported successfully!");
+                                        println!("Wallet ID: {}", wallet_id);
+                                        if let Some(multisig_wallet) = wallet.get_multisig_wallet(&wallet_id) {
+                                            println!("Can sign: {}", multisig_wallet.can_sign());
+                                            println!("My keys: {}", multisig_wallet.my_key_count());
+                                            println!("Balance: {} satoshis", multisig_wallet.get_balance());
+                                        }
+                                        wallet.save(wallet_path)?;
+                                    }
+                                    Err(e) => println!("❌ Failed to import multi-signature wallet: {}", e),
+                                }
+                            }
+                            Err(e) => println!("❌ Invalid configuration file: {}", e),
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to read file: {}", e),
+                }
+            },
+            "8" => {
+                // Create multi-signature transaction
+                if wallet.multisig_wallet_count() == 0 {
+                    println!("No multi-signature wallets found.");
+                    continue;
+                }
+                
+                println!("\n=== Create Multi-Signature Transaction ===");
+                println!("{}", wallet.list_multisig_wallets());
+                
+                print!("Enter the wallet ID to create transaction from: ");
+                io::stdout().flush()?;
+                let mut wallet_id = String::new();
+                io::stdin().read_line(&mut wallet_id)?;
+                let wallet_id = wallet_id.trim();
+                
+                if let Some(multisig_wallet) = wallet.get_multisig_wallet(wallet_id) {
+                    println!("Multi-signature wallet: {}", multisig_wallet.name);
+                    println!("Balance: {} satoshis", multisig_wallet.get_balance());
+                    println!("Required signatures: {}/{}", multisig_wallet.required_signatures, multisig_wallet.total_signers);
+                    
+                    // Get destination address
+                    print!("Enter destination address: ");
+                    io::stdout().flush()?;
+                    let mut dest_address = String::new();
+                    io::stdin().read_line(&mut dest_address)?;
+                    let dest_address = dest_address.trim();
+                    
+                    if dest_address.is_empty() {
+                        println!("Invalid destination address.");
+                        continue;
+                    }
+                    
+                    // Get amount
+                    print!("Enter amount to send (in satoshis): ");
+                    io::stdout().flush()?;
+                    let mut amount_str = String::new();
+                    io::stdin().read_line(&mut amount_str)?;
+                    let amount: u64 = amount_str.trim().parse().unwrap_or(0);
+                    
+                    if amount == 0 {
+                        println!("Invalid amount.");
+                        continue;
+                    }
+                    
+                    // Get fee rate
+                    print!("Enter fee rate (in satoshis per byte): ");
+                    io::stdout().flush()?;
+                    let mut fee_str = String::new();
+                    io::stdin().read_line(&mut fee_str)?;
+                    let fee_rate: u64 = fee_str.trim().parse().unwrap_or(0);
+                    
+                    if fee_rate == 0 {
+                        println!("Invalid fee rate.");
+                        continue;
+                    }
+                    
+                    // Create the transaction
+                    match wallet.create_multisig_transaction(wallet_id, dest_address, amount, fee_rate) {
+                        Ok(multisig_tx) => {
+                            println!("✅ Multi-signature transaction created successfully!");
+                            println!("Transaction details:");
+                            println!("  Destination: {}", dest_address);
+                            println!("  Amount: {} satoshis", amount);
+                            println!("  Fee rate: {} sat/byte", fee_rate);
+                            println!("  Inputs: {}", multisig_tx.transaction.input.len());
+                            println!("  Outputs: {}", multisig_tx.transaction.output.len());
+                            println!("Transaction ready for signing by cosigners.");
+                            last_multisig_tx = Some(multisig_tx);
+                        }
+                        Err(e) => println!("❌ Failed to create multi-signature transaction: {}", e),
+                    }
+                } else {
+                    println!("Wallet not found.");
+                }
+            },
+            "9" => {
+                // Broadcast multi-signature transaction
+                println!("\n=== Broadcast Multi-Signature Transaction ===");
+                println!("This feature loads a fully signed transaction file and broadcasts it to the network.");
+                
+                print!("Enter the path to the fully signed transaction file: ");
+                io::stdout().flush()?;
+                let mut file_path = String::new();
+                io::stdin().read_line(&mut file_path)?;
+                let file_path = file_path.trim();
+                
+                if file_path.is_empty() {
+                    println!("❌ Invalid file path.");
+                    continue;
+                }
+                
+                // Load the transaction from file
+                match multisig::MultiSigTransaction::load_from_file(file_path) {
+                    Ok(multisig_tx) => {
+                        println!("✅ Transaction loaded successfully!");
+                        println!("Transaction details:");
+                        println!("  Wallet ID: {}", multisig_tx.wallet_id);
+                        println!("  Multisig address: {}", multisig_tx.multisig_address);
+                        println!("  Inputs: {}", multisig_tx.transaction.input.len());
+                        println!("  Outputs: {}", multisig_tx.transaction.output.len());
+                        println!("  Total signatures: {}", multisig_tx.partial_signatures.len());
+                        
+                        // Count unique signers
+                        let mut unique_signers = std::collections::HashSet::new();
+                        for sig in &multisig_tx.partial_signatures {
+                            unique_signers.insert(&sig.public_key);
+                        }
+                        println!("  Unique signers: {}", unique_signers.len());
+                        
+                        // Show signature details
+                        println!("  Signature details:");
+                        for (i, sig) in multisig_tx.partial_signatures.iter().enumerate() {
+                            println!("    Signature {}: {} (input {})", i + 1, sig.public_key, sig.input_index);
+                        }
+                        
+                        println!("  Is complete: {}", multisig_tx.is_complete);
+                        
+                        // Verify the transaction is complete
+                        if !multisig_tx.is_complete {
+                            println!("❌ Transaction is not fully signed. Cannot broadcast.");
+                            println!("   Please ensure all required cosigners have signed the transaction.");
+                            continue;
+                        }
+                        
+                        // Find the corresponding multisig wallet
+                        let maybe_wallet = wallet.get_multisig_wallet(&multisig_tx.wallet_id)
+                            .or_else(|| wallet.get_multisig_wallet(&multisig_tx.multisig_address));
+                        
+                        match maybe_wallet {
+                            Some(multisig_wallet) => {
+                                println!("✅ Found multisig wallet: {}", multisig_wallet.name);
+                                println!("   Required signatures: {}/{}", multisig_wallet.required_signatures, multisig_wallet.total_signers);
+                                
+                                // Finalize the transaction
+                                println!("Finalizing transaction...");
+                                match wallet.finalize_multisig_transaction(&multisig_wallet.id, &multisig_tx) {
+                                    Ok(finalized_tx) => {
+                                        println!("✅ Transaction finalized successfully!");
+                                        println!("   Finalized transaction size: {} bytes", bitcoin::consensus::encode::serialize(&finalized_tx).len());
+                                        
+                                        // Broadcast the transaction
+                                        println!("Broadcasting to Bitcoin testnet...");
+                                        match wallet.broadcast_multisig_transaction(&finalized_tx).await {
+                                            Ok(txid) => {
+                                                println!("🎉 SUCCESS! Transaction broadcasted!");
+                                                println!("   Transaction ID: {}", txid);
+                                                println!("   You can view it at: https://blockstream.info/testnet/tx/{}", txid);
+                                                println!("   The transaction will be confirmed in the next block.");
+                                            }
+                                            Err(e) => {
+                                                println!("❌ Failed to broadcast transaction: {}", e);
+                                                println!("   This could be due to network issues or invalid transaction.");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("❌ Failed to finalize transaction: {}", e);
+                                        println!("   This could be due to insufficient signatures or invalid transaction data.");
+                                    }
+                                }
+                            }
+                            None => {
+                                println!("❌ Could not find the corresponding multisig wallet.");
+                                println!("   Wallet ID: {}", multisig_tx.wallet_id);
+                                println!("   Address: {}", multisig_tx.multisig_address);
+                                println!("   Please ensure the multisig wallet is imported in this wallet.");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to load transaction file: {}", e);
+                        println!("   Please ensure the file path is correct and the file contains a valid transaction.");
+                    }
+                }
+            },
+            "10" => {
+                println!("\n=== Save Multi-Signature Transaction to File ===");
+                if let Some(multisig_tx) = &last_multisig_tx {
+                    print!("Enter the path to save the transaction file (e.g., multisig_tx.json): ");
+                    io::stdout().flush()?;
+                    let mut file_path = String::new();
+                    io::stdin().read_line(&mut file_path)?;
+                    let file_path = file_path.trim();
+                    match multisig_tx.save_to_file(file_path) {
+                        Ok(_) => println!("✅ Transaction saved to {}", file_path),
+                        Err(e) => println!("❌ Failed to save transaction: {}", e),
+                    }
+                } else {
+                    println!("❌ No multisignature transaction has been created yet. Please create one first (option 8).");
+                }
+            },
+            "11" => {
+                println!("\n=== Load and Sign Multi-Signature Transaction from File ===");
+                print!("Enter the path of the transaction file to load: ");
+                io::stdout().flush()?;
+                let mut file_path = String::new();
+                io::stdin().read_line(&mut file_path)?;
+                let file_path = file_path.trim();
+                match multisig::MultiSigTransaction::load_from_file(file_path) {
+                    Ok(mut multisig_tx) => {
+                        println!("✅ Transaction loaded. Signing now...");
+                        let wallet_id = multisig_tx.wallet_id.clone();
+                        // Try by wallet ID first
+                        let maybe_wallet = wallet.get_multisig_wallet(&wallet_id)
+                            .or_else(|| {
+                                // Try by multisig address if not found by ID
+                                println!("Wallet not found by ID, trying by multisig address...");
+                                wallet.get_multisig_wallet(&multisig_tx.multisig_address)
+                            });
+                        if let Some(multisig_wallet) = maybe_wallet {
+                            match wallet.sign_multisig_transaction(&multisig_wallet.id, &mut multisig_tx) {
+                                Ok(signatures) => {
+                                    println!("✅ Transaction signed. {} new signatures added.", signatures.len());
+                                    print!("Enter the path to save the signed transaction file: ");
+                                    io::stdout().flush()?;
+                                    let mut save_path = String::new();
+                                    io::stdin().read_line(&mut save_path)?;
+                                    let save_path = save_path.trim();
+                                    match multisig_tx.save_to_file(save_path) {
+                                        Ok(_) => println!("✅ Signed transaction saved to {}", save_path),
+                                        Err(e) => println!("❌ Failed to save signed transaction: {}", e),
+                                    }
+                                }
+                                Err(e) => println!("❌ Failed to sign transaction: {}", e),
+                            }
+                        } else {
+                            println!("❌ Failed to sign transaction: Multi-signature wallet not found by ID or address.");
+                        }
+                    }
+                    Err(e) => println!("❌ Failed to load transaction: {}", e),
+                }
+            },
+            "12" => {
+                // Back to main menu
+                break;
+            },
+            _ => {
+                println!("Invalid choice. Please try again.");
+            }
+        }
+    }
+    
+    Ok(())
+} 
