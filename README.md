@@ -8,7 +8,8 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
 - **BIP44 HD Wallet**: Hierarchical deterministic address generation
 - **Gap Limit Implementation**: Efficient address scanning with configurable gap limits
 - **P2PKH Transaction Signing**: Secure ECDSA signing for legacy Bitcoin addresses
-- **Multi-signature Wallets**: Create and manage 2-of-3, 3-of-5, etc. multi-signature wallets
+- **SegWit Support**: Native P2WPKH (bech32) addresses with witness transaction signing
+- **Multi-signature Wallets**: Create and manage 2-of-3, 3-of-5, etc. multi-signature wallets with native SegWit P2WSH
 - **Multi-signature Transaction Signing**: Sign transactions with multiple cosigners and duplicate detection
 - **Transaction Broadcasting**: Finalize and broadcast multi-signature transactions to the network
 - **UTXO Management**: Real-time balance tracking and UTXO validation
@@ -79,10 +80,19 @@ Addresses are derived using BIP44 path: `m/44'/1'/0'/0/{index}`
 
 #### Transaction Creation
 1. **UTXO Selection**: Smart coin selection algorithm
-2. **Fee Calculation**: Based on transaction size and fee rate
+2. **Fee Calculation**: Based on transaction size and fee rate (optimized for SegWit)
 3. **Input Creation**: References to spent UTXOs
 4. **Output Creation**: Destination + change addresses
-5. **Signing**: ECDSA signatures for each input
+5. **Signing**: ECDSA signatures for each input (P2PKH) or witness data (P2WPKH)
+
+#### SegWit Implementation
+The wallet supports native SegWit (P2WPKH) addresses with the following features:
+
+- **Address Format**: Bech32 encoded addresses (tb1q... for testnet)
+- **Witness Data**: Proper witness structure with signatures and public keys
+- **Fee Optimization**: SegWit inputs use ~68 vbytes vs ~148 vbytes for legacy
+- **Mixed Transactions**: Support for combining P2PKH and P2WPKH inputs
+- **Multi-signature**: Native P2WSH multi-signature wallets
 
 ## 🔒 Security Considerations
 
@@ -133,7 +143,8 @@ const GAP_LIMIT: u32 = 20; // Change this value
 
 ## 🚀 Future Enhancements
 
-- [ ] SegWit support (P2SH-P2WPKH, P2WPKH)
+- [x] SegWit support (P2WPKH) - ✅ **COMPLETED**
+- [ ] P2SH-P2WPKH support
 - [ ] Hardware wallet integration
 - [ ] Lightning Network support
 - [ ] Advanced multi-signature features (time-locks, threshold signatures)
@@ -141,7 +152,15 @@ const GAP_LIMIT: u32 = 20; // Change this value
 
 ## 📝 Recent Updates
 
-### v1.2.0 - Multi-signature Feature (Latest)
+### v1.3.0 - SegWit Support (Latest)
+- ✅ **Native SegWit P2WPKH**: Full support for bech32 addresses (tb1q...)
+- ✅ **Witness Transaction Signing**: Proper SegWit transaction creation and signing
+- ✅ **Mixed Input Support**: Handle both P2PKH and P2WPKH inputs in same transaction
+- ✅ **SegWit Fee Optimization**: Accurate fee calculation for SegWit transactions
+- ✅ **Multi-signature SegWit**: Native P2WSH multi-signature wallets
+- ✅ **Enhanced Address Generation**: Automatic SegWit address creation
+
+### v1.2.0 - Multi-signature Feature
 - ✅ **Multi-signature Wallet Creation**: Create 2-of-3, 3-of-5, etc. multi-signature wallets
 - ✅ **Transaction Signing**: Sign transactions with multiple cosigners and duplicate detection
 - ✅ **CLI Interface**: Complete menu system for multi-signature operations

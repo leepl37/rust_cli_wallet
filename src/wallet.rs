@@ -27,7 +27,9 @@
 //!     let mut wallet = Wallet {
 //!         addresses: Vec::new(),
 //!         next_index: 0,
+//!         next_multisig_index: 0,
 //!         mnemonic: Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string()),
+//!         multisig_wallets: Vec::new(),
 //!     };
 //!     
 //!     // Initialize with mnemonic
@@ -60,6 +62,8 @@ use bitcoin::{
     OutPoint,
     hashes::{hash160, Hash, sha256},
 };
+// In bitcoin 0.32, Address::p2wpkh accepts a CompressedPublicKey via TryFrom<PublicKey>.
+// Avoid importing a specific type path; instead use try_into to obtain the compressed key.
 
 /// Represents an Unspent Transaction Output (UTXO) in the Bitcoin network.
 /// 
@@ -253,7 +257,7 @@ impl Wallet {
     /// 
     /// # Returns
     /// * `Some(&WalletAddress)` - The address if the index is valid
-    /// * `None` - If the index is out of bounds
+    /// * `None` - If the index is out of bounds 
     /// 
 
     pub fn get_address(&self, index: usize) -> Option<&WalletAddress> {
@@ -305,7 +309,7 @@ impl Wallet {
     /// # Errors
     /// - **InsufficientFunds**: Wallet balance is less than amount + fees
     /// - **TransactionFailed**: Network error, invalid address, or signing failure
-    pub async fn sign_and_send_transaction(
+    pub async fn  sign_and_send_transaction(
         &mut self,
         dest_address: &str,
         amount: u64,
@@ -344,28 +348,29 @@ impl Wallet {
             return Err(WalletError::InsufficientFunds);
         }
         
-        // Filter UTXOs based on source address preference and P2PKH format in one pass
-        let p2pkh_utxos: Vec<(&WalletAddress, Utxo)> = all_utxos
+        // Filter UTXOs based on source address preference and supported script types (P2PKH, P2WPKH)
+        let spendable_utxos: Vec<(&WalletAddress, Utxo)> = all_utxos
             .into_iter()
             .filter(|(addr, _)| {
                 // Check source address (if specified)
                 let source_match = source_address.map(|src| addr.address == src).unwrap_or(true);
-                // Check P2PKH format (legacy addresses starting with 'm' or 'n' on testnet)
-                let p2pkh_match = addr.address.starts_with("m") || addr.address.starts_with("n");
-                
-                source_match && p2pkh_match
+                // Allow legacy P2PKH (m/n…) and native segwit P2WPKH (tb1q…)
+                let is_p2pkh = addr.address.starts_with("m") || addr.address.starts_with("n");
+                let is_p2wpkh = addr.address.starts_with("tb1q");
+
+                source_match && (is_p2pkh || is_p2wpkh)
             })
             .collect();
         
-        println!("Found {} P2PKH UTXOs{}", 
-            p2pkh_utxos.len(),
+        println!("Found {} spendable UTXOs{}", 
+            spendable_utxos.len(),
             source_address.map_or(" from all addresses".to_string(), |src| format!(" from source address: {}", src))
         );
         
-        if p2pkh_utxos.is_empty() {
+        if spendable_utxos.is_empty() {
             let error_msg = source_address.map_or(
-                "No P2PKH UTXOs available for transaction".to_string(),
-                |src| format!("No P2PKH UTXOs found in specified source address: {}", src)
+                "No spendable UTXOs available for transaction".to_string(),
+                |src| format!("No spendable UTXOs found in specified source address: {}", src)
             );
             println!("{}", error_msg);
             return Err(WalletError::InsufficientFunds);
@@ -376,24 +381,34 @@ impl Wallet {
             Some(_) => {
                 // User specified a source address - use ALL UTXOs from that address
                 // The filtering above already ensures only UTXOs from the specified address are included
-                println!("Using all {} UTXOs from specified source address", p2pkh_utxos.len());
-                p2pkh_utxos.into_iter().map(|(addr, utxo)| ((*addr).clone(), utxo.clone())).collect()
+                println!("Using all {} UTXOs from specified source address", spendable_utxos.len());
+                spendable_utxos.into_iter().map(|(addr, utxo)| ((*addr).clone(), utxo.clone())).collect()
             }
             None => {
                 // No source address specified - use smart selection across all addresses
                 println!("Using smart UTXO selection across all addresses");
-                self.select_optimal_utxos(&p2pkh_utxos, amount, fee_rate)?
+                self.select_optimal_utxos(&spendable_utxos, amount, fee_rate)?
             }
         };
 
         // Calculate total value of selected UTXOs and estimate transaction fee
         let total_value: u64 = selected_utxos.iter().map(|(_, utxo)| utxo.value).sum();
         
-        // Transaction size estimation:
-        // - Each input: ~148 bytes (outpoint + script + sequence)
-        // - Each output: ~34 bytes (value + script)
-        // - Transaction overhead: ~10 bytes (version + locktime)
-        let estimated_size = (selected_utxos.len() as u64) * 148 + 2 * 34 + 10;
+        // Transaction size estimation by type (approximate vbytes):
+        // - P2PKH input ~148 vbytes
+        // - P2WPKH input ~68 vbytes
+        // - P2PKH output ~34 vbytes; P2WPKH output ~31 vbytes
+        // - Overhead ~10 vbytes
+        let num_p2wpkh_inputs = selected_utxos.iter().filter(|(addr, _)| addr.address.starts_with("tb1q")).count() as u64;
+        let num_p2pkh_inputs = selected_utxos.len() as u64 - num_p2wpkh_inputs;
+
+        // Destination output size based on destination address prefix
+        let dest_out_sz = if dest_address.starts_with("tb1q") { 31u64 } else { 34u64 };
+        // Change output size based on our first address prefix
+        let change_out_sz = if self.addresses[0].address.starts_with("tb1q") { 31u64 } else { 34u64 };
+
+        // Assume there will be a change output; adjust later if change == 0
+        let mut estimated_size = num_p2pkh_inputs * 148 + num_p2wpkh_inputs * 68 + dest_out_sz + change_out_sz + 10;
         let fee = estimated_size * fee_rate;
 
         println!("Selected {} UTXOs", selected_utxos.len());
@@ -444,6 +459,14 @@ impl Wallet {
                 value: Amount::from_sat(change),  // Remaining funds sent back to wallet
                 script_pubkey: change_script,
             });
+        } else {
+            // Re-estimate fee without change output
+            estimated_size = num_p2pkh_inputs * 148 + num_p2wpkh_inputs * 68 + dest_out_sz + 10;
+            let new_fee = estimated_size * fee_rate;
+            if total_value < amount + new_fee {
+                println!("Failed to send transaction: Insufficient funds after fee re-estimation");
+                return Err(WalletError::InsufficientFunds);
+            }
         }
 
         println!("\nTransaction Structure:");
@@ -460,7 +483,7 @@ impl Wallet {
             println!("  Script: {}", output.script_pubkey);
         }
 
-        // Sign transaction for inputs
+        // Sign transaction for inputs (supports P2PKH and P2WPKH)
         let secp = Secp256k1::new();
         for (i, (addr, utxo)) in selected_utxos.iter().enumerate() {
             println!("\nSigning input {} with address {}", i, addr.address);
@@ -469,103 +492,86 @@ impl Wallet {
             let private_key = PrivateKey::from_wif(&addr.private_key)
                 .map_err(|_| WalletError::TransactionFailed)?;
             
-            let script_pubkey = self.create_script_pubkey(&addr.address, Network::Testnet)?;
-            
-            // Get the public key and verify it matches the address
-            let pubkey = private_key.public_key(&secp);
+            // Determine address type
             let address = Address::from_str(&addr.address)
                 .map_err(|_| WalletError::TransactionFailed)?
                 .require_network(Network::Testnet)
                 .map_err(|_| WalletError::TransactionFailed)?;
-            
-            // Verify the public key matches the address
-            let pubkey_hash = address.pubkey_hash()
-                .ok_or(WalletError::TransactionFailed)?;
-            let derived_pubkey_hash = bitcoin::PubkeyHash::from_byte_array(
-                hash160::Hash::hash(&pubkey.inner.serialize()).to_byte_array()
-            );
-            //keep continue. 
-            if pubkey_hash != derived_pubkey_hash {
-                println!("\nPublic key hash mismatch!");
-                println!("Expected: {}", pubkey_hash);
-                println!("Got: {}", derived_pubkey_hash);
-                return Err(WalletError::TransactionFailed);
-            }
-            
-            println!("\nDetailed Transaction Information:");
-            println!("Input Address: {}", address);
-            println!("Public Key: {}", pubkey);
-            println!("Script PubKey: {}", script_pubkey);
-            println!("UTXO Value: {} satoshis", utxo.value);
-            println!("Public Key Hash: {}", pubkey_hash);
-            
-            // Verify transaction structure before signing
-            println!("\nTransaction Structure Before Signing:");
-            println!("Version: {}", tx.version);
-            println!("Lock Time: {}", tx.lock_time);
-            println!("Input Count: {}", tx.input.len());
-            println!("Output Count: {}", tx.output.len());
-            println!("Input {} Sequence: {}", i, tx.input[i].sequence);
-            println!("UTXO Value for signing: {} satoshis", utxo.value);
-            
-            // Create sighash for legacy P2PKH (do not use value parameter)
-            let cache = SighashCache::new(&tx);
-            let sighash = match cache.legacy_signature_hash(i, &script_pubkey, EcdsaSighashType::All as u32) {
-                Ok(sighash) => sighash,
-                Err(_) => {
-                    println!("Failed to create sighash for input {}", i);
+
+            let pubkey = private_key.public_key(&secp);
+
+            match address.address_type() {
+                Some(bitcoin::AddressType::P2pkh) => {
+                    let script_pubkey = self.create_script_pubkey(&addr.address, Network::Testnet)?;
+                    // Verify pubkey matches address
+                    let pubkey_hash = address.pubkey_hash().ok_or(WalletError::TransactionFailed)?;
+                    let derived_pubkey_hash = bitcoin::PubkeyHash::from_byte_array(
+                        hash160::Hash::hash(&pubkey.inner.serialize()).to_byte_array()
+                    );
+                    if pubkey_hash != derived_pubkey_hash {
+                        println!("\nPublic key hash mismatch!");
+                        println!("Expected: {}", pubkey_hash);
+                        println!("Got: {}", derived_pubkey_hash);
+                        return Err(WalletError::TransactionFailed);
+                    }
+
+                    let cache = SighashCache::new(&tx);
+                    let sighash = match cache.legacy_signature_hash(i, &script_pubkey, EcdsaSighashType::All as u32) {
+                        Ok(sighash) => sighash,
+                        Err(_) => {
+                            println!("Failed to create sighash for input {}", i);
+                            return Err(WalletError::TransactionFailed);
+                        }
+                    };
+                    let msg = Message::from_digest_slice(sighash.as_ref()).map_err(|_| WalletError::TransactionFailed)?;
+                    let sig = secp.sign_ecdsa(&msg, &private_key.inner);
+
+                    let mut sig_bytes = sig.serialize_der().to_vec();
+                    sig_bytes.push(EcdsaSighashType::All as u8);
+                    let pubkey_bytes = pubkey.inner.serialize();
+                    let script_sig = bitcoin::script::Builder::new()
+                        .push_slice(bitcoin::script::PushBytesBuf::try_from(sig_bytes).unwrap())
+                        .push_slice(bitcoin::script::PushBytesBuf::try_from(pubkey_bytes.to_vec()).unwrap())
+                        .into_script();
+                    tx.input[i].script_sig = script_sig;
+                }
+                Some(bitcoin::AddressType::P2wpkh) => {
+                    // Build scriptCode for BIP143 (standard P2PKH script with our pubkey hash)
+                    let derived_pubkey_hash = bitcoin::PubkeyHash::from_byte_array(
+                        hash160::Hash::hash(&pubkey.inner.serialize()).to_byte_array()
+                    );
+                    let script_code = bitcoin::script::Builder::new()
+                        .push_opcode(bitcoin::opcodes::all::OP_DUP)
+                        .push_opcode(bitcoin::opcodes::all::OP_HASH160)
+                        .push_slice(derived_pubkey_hash)
+                        .push_opcode(bitcoin::opcodes::all::OP_EQUALVERIFY)
+                        .push_opcode(bitcoin::opcodes::all::OP_CHECKSIG)
+                        .into_script();
+
+                    let mut cache = SighashCache::new(&tx);
+                    let sighash = match cache.p2wpkh_signature_hash(i, &script_code, Amount::from_sat(utxo.value), EcdsaSighashType::All) {
+                        Ok(sighash) => sighash,
+                        Err(_) => {
+                            println!("Failed to create segwit sighash for input {}", i);
+                            return Err(WalletError::TransactionFailed);
+                        }
+                    };
+                    let msg = Message::from_digest_slice(sighash.as_ref()).map_err(|_| WalletError::TransactionFailed)?;
+                    let sig = secp.sign_ecdsa(&msg, &private_key.inner);
+                    let mut sig_bytes = sig.serialize_der().to_vec();
+                    sig_bytes.push(EcdsaSighashType::All as u8);
+                    let pubkey_bytes = pubkey.inner.serialize();
+
+                    // For native segwit P2WPKH: empty script_sig, witness = [sig, pubkey]
+                    tx.input[i].script_sig = ScriptBuf::new();
+                    tx.input[i].witness.push(sig_bytes);
+                    tx.input[i].witness.push(pubkey_bytes);
+                }
+                _ => {
+                    println!("Unsupported address type for signing: {}", addr.address);
                     return Err(WalletError::TransactionFailed);
                 }
-            };
-            
-            println!("\nVerifying Signature Creation:");
-            println!("1. Transaction Hash: {}", hex::encode(sighash));
-            println!("1a. UTXO Value used in hash: {} satoshis", utxo.value);
-            println!("1b. Script used in hash: {}", script_pubkey);
-            
-            //sighash is the hash of the transaction that is being signed. 
-            let msg = Message::from_digest_slice(sighash.as_ref())
-                .map_err(|_| WalletError::TransactionFailed)?;
-            
-            //sign the sighash with the private key. 
-            let sig = secp.sign_ecdsa(&msg, &private_key.inner);
-            
-            // Verify the signature immediately after creation
-            match secp.verify_ecdsa(&msg, &sig, &pubkey.inner) {
-                Ok(_) => println!("2. Signature verification successful!"),
-                Err(e) => {
-                    println!("2. Signature verification failed: {}", e);
-                    return Err(WalletError::TransactionFailed);
-                }
             }
-            
-            // Create script signature with proper hash type
-            let mut sig_bytes = sig.serialize_der().to_vec();
-            sig_bytes.push(EcdsaSighashType::All as u8);
-            let pubkey_bytes = pubkey.inner.serialize();
-            
-            println!("\nSignature Details:");
-            println!("3. Signature (DER): {}", hex::encode(&sig_bytes));
-            println!("4. Public Key: {}", hex::encode(pubkey_bytes));
-            println!("5. Hash Type: {:02x}", EcdsaSighashType::All as u8);
-            
-            // Create proper P2PKH script
-            let script_sig = bitcoin::script::Builder::new()
-                .push_slice(bitcoin::script::PushBytesBuf::try_from(sig_bytes).unwrap())
-                .push_slice(bitcoin::script::PushBytesBuf::try_from(pubkey_bytes.to_vec()).unwrap())
-                .into_script();
-            
-            println!("\nFinal Scripts:");
-            println!("6. ScriptSig: {}", script_sig);
-            println!("7. ScriptPubKey: {}", script_pubkey);
-            
-            // Verify the script structure
-            println!("\nScript Verification:");
-            println!("8. Input Address: {}", address);
-            println!("9. Public Key Hash: {}", pubkey_hash);
-            println!("10. Script Hash: {}", bitcoin::hashes::hash160::Hash::hash(script_pubkey.as_bytes()));
-            
-            tx.input[i].script_sig = script_sig;
         }
 
         // Broadcast transaction
@@ -874,7 +880,9 @@ impl Wallet {
                 .map_err(|_| "Failed to create secret key")?;
             
             let private_key = PrivateKey::new(secret_key, Network::Testnet);
-            let address = Address::p2pkh(private_key.public_key(&secp), Network::Testnet);
+            let pubkey = private_key.public_key(&secp);
+            let compressed = pubkey.try_into().map_err(|_| "Failed to compress public key").unwrap();
+            let address = Address::p2wpkh(&compressed, Network::Testnet);
             
             // Check if this address has been used by querying the blockchain
             let has_been_used = self.check_address_usage(&address.to_string()).await?;
@@ -902,7 +910,7 @@ impl Wallet {
                     private_key: private_key.to_wif(),
                     public_key: private_key.public_key(&secp).to_string(),
                     utxos: Vec::new(),
-                    derivation_path: format!("m/44'/1'/0'/0/{}", current_index),
+                    derivation_path: format!("m/84'/1'/0'/0/{}", current_index),
                 };
                 
                 self.addresses.push(wallet_address);
@@ -1094,9 +1102,10 @@ impl Wallet {
         
         let private_key = PrivateKey::new(secret_key, Network::Testnet);
         let public_key = private_key.public_key(&secp);
-        let address = Address::p2pkh(public_key, Network::Testnet);
+        let compressed = public_key.try_into().map_err(|_| "Failed to compress public key").unwrap();
+        let address = Address::p2wpkh(&compressed, Network::Testnet);
         
-        let derivation_path = format!("m/44'/1'/0'/0/{}", self.next_index);
+        let derivation_path = format!("m/84'/1'/0'/0/{}", self.next_index);
         
         let wallet_address = WalletAddress {
             address: address.to_string(),
@@ -1125,10 +1134,9 @@ impl Wallet {
     /// * `Err` - If the file can't be written or serialization fails
     /// 
     /// # Example
-    /// ```rust
-    /// use std::path::Path;
-    /// 
-    /// wallet.save(Path::new("my_wallet.json"))?;
+    /// ```rust,ignore
+    /// // Save to a custom path
+    /// // wallet.save(Path::new("my_wallet.json"))?;
     /// ```
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn StdError>> {
         self.save_to_file(path)
@@ -1141,15 +1149,7 @@ impl Wallet {
     /// number of UTXOs it contains.
     /// 
     /// # Output Format
-    /// ```
-    /// Address 1: tb1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh
-    /// Balance: 50000 satoshis
-    /// UTXOs: 2
-    /// 
-    /// Address 2: tb1q8c6fshw72dlwn2hql0gx2f66qgp9peqf0hq67r
-    /// Balance: 25000 satoshis
-    /// UTXOs: 1
-    /// ```
+    /// Prints each address, balance and UTXO count to stdout.
     /// 
     /// # Example
     /// ```rust,ignore
@@ -1488,12 +1488,14 @@ impl Wallet {
     /// * `Err` - If finalization fails
     pub fn finalize_multisig_transaction(
         &self,
-        wallet_id: &str,
+        multisig_wallet: &multisig::MultiSigWallet,
         multisig_tx: &multisig::MultiSigTransaction,
     ) -> Result<BitcoinTransaction, Box<dyn std::error::Error>> {
-        let multisig_wallet = self.get_multisig_wallet(wallet_id)
-            .ok_or("Multi-signature wallet not found")?;
-        
+        if multisig_wallet.id != multisig_tx.wallet_id
+        && multisig_wallet.address != multisig_tx.multisig_address
+    {
+        return Err("Mismatched wallet for transaction".into());
+    }
         multisig_wallet.finalize_transaction(multisig_tx)
     }
     

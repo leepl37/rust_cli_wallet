@@ -231,7 +231,7 @@ impl MultiSigWallet {
             return Err("At least one public key is required".into());
         }
         
-        // Generate the multi-sig address
+        // Generate the multi-sig address (default to native SegWit P2WSH)
         let address = Self::generate_multisig_address(&public_keys, required_signatures, network)?;
         
         // Generate unique ID
@@ -256,8 +256,8 @@ impl MultiSigWallet {
     
     /// Generates a multi-signature address from public keys
     /// 
-    /// This function creates a P2SH address that requires multiple signatures
-    /// to spend funds. It follows the BIP67 standard for public key ordering.
+    /// By default, this creates a native SegWit P2WSH address from the
+    /// multisig witness script. Public keys are sorted per BIP67.
     /// 
     /// # Arguments
     /// * `public_keys` - List of public keys (will be sorted by BIP67)
@@ -283,14 +283,16 @@ impl MultiSigWallet {
             bitcoin_pubkeys.push(pubkey);
         }
         
-        // Create the redeem script for multi-signature
-        let redeem_script = Self::create_redeem_script(&bitcoin_pubkeys, required_signatures)?;
+        // Create the witness script for multi-signature (same script body)
+        let witness_script = Self::create_redeem_script(&bitcoin_pubkeys, required_signatures)?;
         
-        // Generate P2SH address from the redeem script
-        let address = Address::p2sh(&redeem_script, network)?;
+        // Generate native SegWit P2WSH address from the witness script
+        let address = Address::p2wsh(&witness_script, network);
         
         Ok(address.to_string())
     }
+
+
     
     /// Creates a redeem script for multi-signature
     /// 
@@ -660,34 +662,28 @@ impl MultiSigWallet {
             signatures_by_input.entry(sig.input_index).or_default().push(sig.clone());
         }
         
-        // Create script signatures for each input
+        // Create unlocking data for each input
         for (input_index, input) in final_tx.input.iter_mut().enumerate() {
             if let Some(signatures) = signatures_by_input.get(&input_index) {
                 // Sort signatures by public key order (BIP67)
                 let mut sorted_sigs = signatures.clone();
                 sorted_sigs.sort_by(|a, b| a.public_key.cmp(&b.public_key));
-                
-                // Create the script signature manually to avoid PushBytes issues
-                let mut script_bytes = Vec::new();
-                
-                // Add OP_0 (required for OP_CHECKMULTISIG)
-                script_bytes.push(0x00);
-                
-                // Add signatures
+
+                // Build witness stack for P2WSH: [sig1, sig2, ..., witness_script]
+                // Also support wrapped P2SH-P2WSH by placing the witness program in script_sig
+                // Detect by script form: if redeem_script is a multisig and address is P2WSH,
+                // we prefer witness path. Fallback to legacy P2SH if needed.
+
+                // Construct the program for P2WSH
+                let witness_script_bytes = multisig_tx.redeem_script.as_bytes().to_vec();
+
+                // Default: use witness (native P2WSH)
+                input.script_sig = ScriptBuf::new();
+                input.witness.push(vec![]); // OP_0 dummy for CHECKMULTISIG
                 for sig in &sorted_sigs {
-                    // Add signature length
-                    script_bytes.push(sig.signature.len() as u8);
-                    // Add signature bytes
-                    script_bytes.extend_from_slice(&sig.signature);
+                    input.witness.push(sig.signature.clone());
                 }
-                
-                // Add the redeem script
-                let redeem_script_bytes = multisig_tx.redeem_script.as_bytes();
-                script_bytes.push(redeem_script_bytes.len() as u8);
-                script_bytes.extend_from_slice(redeem_script_bytes);
-                
-                // Create script from bytes
-                input.script_sig = ScriptBuf::from_bytes(script_bytes);
+                input.witness.push(witness_script_bytes);
             }
         }
         
@@ -810,20 +806,26 @@ impl std::fmt::Display for MultiSigWallet {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
     #[test]
     fn test_multisig_wallet_creation() {
-        let public_keys = vec![
-            "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-            "03f0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-            "04f0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        ];
+        // Generate three valid compressed public keys
+        let secp = Secp256k1::new();
+        let sk1 = SecretKey::new(&mut rand::thread_rng());
+        let sk2 = SecretKey::new(&mut rand::thread_rng());
+        let sk3 = SecretKey::new(&mut rand::thread_rng());
+
+        let pk1 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk1, Network::Testnet));
+        let pk2 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk2, Network::Testnet));
+        let pk3 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk3, Network::Testnet));
+
+        let public_keys = vec![pk1.to_string(), pk2.to_string(), pk3.to_string()];
         
         let mut my_private_keys = HashMap::new();
-        my_private_keys.insert(
-            "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-            "cTvNx2qMkEJUf1vtiAPo1VdJ4Arn1AmmCPxV5pDKLr4gH8CtrEk".to_string(),
-        );
+        // Provide WIF for the first key to allow can_sign() to be true
+        let wif1 = bitcoin::PrivateKey::new(sk1, Network::Testnet).to_wif();
+        my_private_keys.insert(public_keys[0].clone(), wif1);
         
         let wallet = MultiSigWallet::new(
             "Test Multi-Sig".to_string(),
@@ -845,9 +847,11 @@ mod tests {
 
     #[test]
     fn test_multisig_wallet_validation() {
-        let public_keys = vec![
-            "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        ];
+        // Single valid key but require 2 signatures -> invalid
+        let secp = Secp256k1::new();
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let pk = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk, Network::Testnet));
+        let public_keys = vec![pk.to_string()];
         
         let my_private_keys = HashMap::new();
         

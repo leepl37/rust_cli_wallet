@@ -1,11 +1,14 @@
 use rust_cli_wallet::wallet::{Wallet, WalletAddress, Utxo, UtxoStatus};
 use std::collections::HashMap;
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::Network;
 
 #[tokio::test]
 async fn test_wallet_creation_and_persistence() {
     let mut wallet = Wallet {
         addresses: Vec::new(),
         next_index: 0,
+        next_multisig_index: 0,
         mnemonic: Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string()),
         multisig_wallets: Vec::new(),
     };
@@ -30,6 +33,7 @@ fn test_wallet_operations() {
     let mut wallet = Wallet {
         addresses: Vec::new(),
         next_index: 0,
+        next_multisig_index: 0,
         mnemonic: None,
         multisig_wallets: Vec::new(),
     };
@@ -65,6 +69,7 @@ fn test_error_handling() {
     let wallet = Wallet {
         addresses: Vec::new(),
         next_index: 0,
+        next_multisig_index: 0,
         mnemonic: None,
         multisig_wallets: Vec::new(),
     };
@@ -95,6 +100,7 @@ fn test_wallet_serialization() {
             derivation_path: "m/44'/1'/0'/0/0".to_string(),
         }],
         next_index: 1,
+        next_multisig_index: 0,
         mnemonic: Some("test mnemonic".to_string()),
         multisig_wallets: Vec::new(),
     };
@@ -110,22 +116,24 @@ async fn test_multisig_wallet_creation() {
     let mut wallet = Wallet {
         addresses: Vec::new(),
         next_index: 0,
+        next_multisig_index: 0,
         mnemonic: Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string()),
         multisig_wallets: Vec::new(),
     };
     
-    // Create a multi-signature wallet
-    let public_keys = vec![
-        "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        "03f0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        "04f0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-    ];
-    
+    // Create a multi-signature wallet using generated keys
+    let secp = Secp256k1::new();
+    let sk1 = SecretKey::new(&mut rand::thread_rng());
+    let sk2 = SecretKey::new(&mut rand::thread_rng());
+    let sk3 = SecretKey::new(&mut rand::thread_rng());
+    let pk1 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk1, Network::Testnet));
+    let pk2 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk2, Network::Testnet));
+    let pk3 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk3, Network::Testnet));
+    let public_keys = vec![pk1.to_string(), pk2.to_string(), pk3.to_string()];
+
     let mut my_private_keys = HashMap::new();
-    my_private_keys.insert(
-        "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        "cTvNx2qMkEJUf1vtiAPo1VdJ4Arn1AmmCPxV5pDKLr4gH8CtrEk".to_string(),
-    );
+    let wif1 = bitcoin::PrivateKey::new(sk1, Network::Testnet).to_wif();
+    my_private_keys.insert(public_keys[0].clone(), wif1);
     
     let wallet_id = wallet.create_multisig_wallet(
         "Test Multi-Sig".to_string(),
@@ -165,6 +173,7 @@ async fn test_multisig_complete_workflow() {
     let mut wallet = Wallet {
         addresses: Vec::new(),
         next_index: 0,
+        next_multisig_index: 0,
         mnemonic: Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string()),
         multisig_wallets: Vec::new(),
     };
@@ -173,17 +182,19 @@ async fn test_multisig_complete_workflow() {
     
     // Step 1: Create a multi-signature wallet
     println!("Step 1: Creating multi-signature wallet...");
-    let public_keys = vec![
-        "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        "03f0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        "04f0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-    ];
-    
+    // Generate keys for the complete workflow as well
+    let secp = Secp256k1::new();
+    let sk1 = SecretKey::new(&mut rand::thread_rng());
+    let sk2 = SecretKey::new(&mut rand::thread_rng());
+    let sk3 = SecretKey::new(&mut rand::thread_rng());
+    let pk1 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk1, Network::Testnet));
+    let pk2 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk2, Network::Testnet));
+    let pk3 = bitcoin::PublicKey::from_private_key(&secp, &bitcoin::PrivateKey::new(sk3, Network::Testnet));
+    let public_keys = vec![pk1.to_string(), pk2.to_string(), pk3.to_string()];
+
     let mut my_private_keys = HashMap::new();
-    my_private_keys.insert(
-        "02e0f7449c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8c1a6f8".to_string(),
-        "cTvNx2qMkEJUf1vtiAPo1VdJ4Arn1AmmCPxV5pDKLr4gH8CtrEk".to_string(),
-    );
+    let wif1 = bitcoin::PrivateKey::new(sk1, Network::Testnet).to_wif();
+    my_private_keys.insert(public_keys[0].clone(), wif1);
     
     let wallet_id = wallet.create_multisig_wallet(
         "Company Treasury".to_string(),
