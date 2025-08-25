@@ -152,7 +152,14 @@ const GAP_LIMIT: u32 = 20; // Change this value
 
 ## 📝 Recent Updates
 
-### v1.3.0 - SegWit Support (Latest)
+### v1.3.1 - Enhanced Multi-signature Security (Latest)
+- ✅ **Duplicate Private Key Validation**: Prevents accidental overwriting of existing private keys
+- ✅ **Smart Key Management**: Warns users when different private keys exist for the same public key
+- ✅ **User Confirmation Prompts**: Asks for explicit confirmation before overwriting existing keys
+- ✅ **Data Integrity Protection**: Maintains wallet consistency and prevents data loss
+- ✅ **Enhanced User Feedback**: Clear messaging for duplicate detection and key validation
+
+### v1.3.0 - SegWit Support
 - ✅ **Native SegWit P2WPKH**: Full support for bech32 addresses (tb1q...)
 - ✅ **Witness Transaction Signing**: Proper SegWit transaction creation and signing
 - ✅ **Mixed Input Support**: Handle both P2PKH and P2WPKH inputs in same transaction
