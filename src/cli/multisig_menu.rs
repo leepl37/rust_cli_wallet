@@ -303,6 +303,26 @@ pub async fn run_multisig_management(wallet: &mut Wallet, wallet_path: &Path) ->
                                                         continue;
                                                     }
                                                     
+                                                    // Check if a private key already exists for this public key
+                                                    if let Some(existing_privkey) = my_private_keys.get(pubkey) {
+                                                        if existing_privkey == &privkey {
+                                                            println!("ℹ️  Private key for public key {} already exists and matches", i + 1);
+                                                        } else {
+                                                            println!("⚠️  Warning: A different private key already exists for public key {}", i + 1);
+                                                            println!("   Existing: {}", existing_privkey);
+                                                            println!("   New:      {}", privkey);
+                                                            print!("   Do you want to overwrite the existing private key? (y/n): ");
+                                                            io::stdout().flush()?;
+                                                            let mut overwrite = String::new();
+                                                            io::stdin().read_line(&mut overwrite)?;
+                                                            
+                                                            if overwrite.trim().to_lowercase() != "y" {
+                                                                println!("   Skipping private key for public key {}", i + 1);
+                                                                continue;
+                                                            }
+                                                        }
+                                                    }
+                                                    
                                                     my_private_keys.insert(pubkey.clone(), privkey);
                                                     println!("✅ Added private key for public key {}", i + 1);
                                                 }
