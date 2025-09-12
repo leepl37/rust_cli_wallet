@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use serde::ser::SerializeStruct;
 use serde::de::{self, Visitor, MapAccess};
 use std::fmt;
-use bitcoin::{PublicKey, Address, Network, ScriptBuf, Transaction as BitcoinTransaction, TxIn, TxOut, secp256k1::{Message, Secp256k1}, consensus::encode::serialize_hex, sighash::{SighashCache, EcdsaSighashType}, transaction::Version, absolute::LockTime, Sequence, Witness, Amount, OutPoint, hashes::{hash160, Hash, sha256}};
+use bitcoin::{PublicKey, Address, Network, ScriptBuf, Transaction as BitcoinTransaction, TxIn, TxOut, secp256k1::{Message, Secp256k1}, sighash::{SighashCache, EcdsaSighashType}, transaction::Version, absolute::LockTime, Sequence, Witness, Amount, OutPoint};
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -62,7 +62,7 @@ impl<'de> Deserialize<'de> for MultiSigTransaction {
     where
         D: Deserializer<'de>,
     {
-        enum Field { Transaction, RedeemScript, PartialSignatures, WalletId, MultisigAddress, IsComplete }
+        // Removed unused Field enum to avoid dead_code warning
         struct MultiSigTransactionVisitor;
         impl<'de> Visitor<'de> for MultiSigTransactionVisitor {
             type Value = MultiSigTransaction;
@@ -572,7 +572,7 @@ impl MultiSigWallet {
             
             let msg = Message::from_digest_slice(sighash.as_ref())?;
             
-                    // Sign with each of your private keys
+        // Sign with each of your private keys
         for (pubkey_str, privkey_str) in &self.my_private_keys {
             let private_key = bitcoin::PrivateKey::from_wif(privkey_str)?;
             

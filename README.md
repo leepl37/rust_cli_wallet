@@ -15,6 +15,7 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
 - **UTXO Management**: Real-time balance tracking and UTXO validation
 - **Blockchain Integration**: Direct integration with Bitcoin testnet via Blockstream API
 - **Secure Key Management**: Private keys stored in WIF format with proper cryptographic handling
+-. **Lightning Node (Testnet)**: Start a Lightning node via LDK Node and print your Node ID
 
 ## 🛠️ Technical Highlights
 
@@ -34,7 +35,7 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/yourusername/rust_cli_wallet.git
+   git clone https://github.com/leepl37/rust_cli_wallet.git
    cd rust_cli_wallet
    ```
 
@@ -47,6 +48,24 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
    ```bash
    cargo run
    ```
+
+## ⚡ Quickstart: Lightning Node (Testnet)
+
+Start a Lightning node using LDK Node and print your Node ID:
+
+```bash
+cargo run
+# In the menu, choose:
+# 7) LDK Node Quickstart (Testnet)
+```
+
+What happens:
+- A testnet Lightning node starts using Esplora as the chain source (`mempool.space` testnet API)
+- The node listens on port 9735 (local by default)
+- Your Node ID (public key) is printed, e.g. `Node ID: 02abcd...`
+- State is stored under `./ldk_data/` so the node survives restarts
+
+Tip: Keep the menu running to keep the node online. Share `node_id@host:9735` with peers to connect or open channels (testnet).
 
 ## 🏗️ Architecture
 
@@ -146,7 +165,7 @@ const GAP_LIMIT: u32 = 20; // Change this value
 - [x] SegWit support (P2WPKH) - ✅ **COMPLETED**
 - [ ] P2SH-P2WPKH support
 - [ ] Hardware wallet integration
-- [ ] Lightning Network support
+- [x] Lightning Node (Testnet) via LDK Node
 - [ ] Advanced multi-signature features (time-locks, threshold signatures)
 
 

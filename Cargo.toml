@@ -16,6 +16,7 @@ hex = "0.4.3"
 bip39 = "2.0.0"
 uuid = { version = "1.0", features = ["v4"] }
 sha2 = "0.10.8"
+ldk-node = "0.6.2"
 
 [dev-dependencies]
 tempfile = "3.8"

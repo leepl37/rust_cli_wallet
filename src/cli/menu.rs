@@ -2,6 +2,8 @@ use std::path::Path;
 use std::io::{self, Write};
 use crate::wallet::Wallet;
 use crate::cli::multisig_menu::run_multisig_management;
+// Removed custom Lightning simulator menu; using LDK Node Quickstart instead
+ 
 
 pub async fn run_interactive_mode() -> Result<(), Box<dyn std::error::Error>> {
     // Load or create wallet
@@ -151,8 +153,9 @@ pub async fn run_interactive_mode() -> Result<(), Box<dyn std::error::Error>> {
         println!("4. Display all addresses and balances");
         println!("5. List addresses with detailed information");
         println!("6. Multi-signature wallet management");
-        println!("7. Exit");
-        print!("Enter your choice (1-7): ");
+        println!("7. LDK Node Quickstart (Testnet)");
+        println!("8. Exit");
+        print!("Enter your choice (1-8): ");
         io::stdout().flush()?;
         
         let mut choice = String::new();
@@ -405,6 +408,10 @@ pub async fn run_interactive_mode() -> Result<(), Box<dyn std::error::Error>> {
                 run_multisig_management(&mut wallet, wallet_path).await?;
             },
             "7" => {
+                // LDK Node Quickstart
+                crate::cli::ldk_node_quickstart_menu::LdkNodeQuickstartMenu::show()?;
+            },
+            "8" => {
                 // Exit
                 println!("Goodbye!");
                 break;

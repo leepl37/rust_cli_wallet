@@ -151,7 +151,7 @@ impl std::fmt::Display for WalletAddress {
 /// - The mnemonic phrase is stored in plain text for wallet recovery
 /// - In production, consider encrypting the entire wallet file
 /// - Private keys are stored in WIF format for compatibility
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Wallet {
     /// List of all addresses in the wallet
     pub addresses: Vec<WalletAddress>,
