@@ -15,7 +15,11 @@ A secure, feature-rich Bitcoin wallet implementation in Rust with support for wa
 - **UTXO Management**: Real-time balance tracking and UTXO validation
 - **Blockchain Integration**: Direct integration with Bitcoin testnet via Blockstream API
 - **Secure Key Management**: Private keys stored in WIF format with proper cryptographic handling
--. **Lightning Node (Testnet)**: Start a Lightning node via LDK Node and print your Node ID
+- **Lightning Node (Testnet)**: Start a Lightning node via LDK Node and print your Node ID
+  
+### SegWit variants supported
+- **Native SegWit (P2WPKH/P2WSH)**: Bech32 addresses (testnet: `tb1q...` / `tb1p...`). Witness data goes in the witness; empty `scriptSig`.
+- **Wrapped SegWit (P2SH-P2WPKH)**: Base58 P2SH addresses (testnet: `2...`). The segwit witness program (redeemScript) is placed in `scriptSig`; signatures are still carried in the witness. Useful for legacy compatibility.
 
 ## 🛠️ Technical Highlights
 
@@ -163,7 +167,7 @@ const GAP_LIMIT: u32 = 20; // Change this value
 ## 🚀 Future Enhancements
 
 - [x] SegWit support (P2WPKH) - ✅ **COMPLETED**
-- [ ] P2SH-P2WPKH support
+- [x] P2SH-P2WPKH support
 - [x] Lightning Node (Testnet) via LDK Node
 - [ ] Advanced multi-signature features (time-locks, threshold signatures)
 
