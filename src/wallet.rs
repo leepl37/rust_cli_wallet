@@ -348,17 +348,18 @@ impl Wallet {
             return Err(WalletError::InsufficientFunds);
         }
         
-        // Filter UTXOs based on source address preference and supported script types (P2PKH, P2WPKH)
+        // Filter UTXOs based on source address preference and supported script types (P2PKH, P2WPKH, P2SH-P2WPKH)
         let spendable_utxos: Vec<(&WalletAddress, Utxo)> = all_utxos
             .into_iter()
             .filter(|(addr, _)| {
                 // Check source address (if specified)
                 let source_match = source_address.map(|src| addr.address == src).unwrap_or(true);
-                // Allow legacy P2PKH (m/n…) and native segwit P2WPKH (tb1q…)
+                // Allow legacy P2PKH (m/n…), native segwit P2WPKH (tb1q…), and wrapped segwit P2SH-P2WPKH (2…)
                 let is_p2pkh = addr.address.starts_with("m") || addr.address.starts_with("n");
                 let is_p2wpkh = addr.address.starts_with("tb1q");
+                let is_p2sh_p2wpkh = addr.address.starts_with("2");
 
-                source_match && (is_p2pkh || is_p2wpkh)
+                source_match && (is_p2pkh || is_p2wpkh || is_p2sh_p2wpkh)
             })
             .collect();
         
@@ -397,18 +398,20 @@ impl Wallet {
         // Transaction size estimation by type (approximate vbytes):
         // - P2PKH input ~148 vbytes
         // - P2WPKH input ~68 vbytes
+        // - P2SH-P2WPKH input ~91 vbytes
         // - P2PKH output ~34 vbytes; P2WPKH output ~31 vbytes
         // - Overhead ~10 vbytes
         let num_p2wpkh_inputs = selected_utxos.iter().filter(|(addr, _)| addr.address.starts_with("tb1q")).count() as u64;
-        let num_p2pkh_inputs = selected_utxos.len() as u64 - num_p2wpkh_inputs;
+        let num_p2sh_p2wpkh_inputs = selected_utxos.iter().filter(|(addr, _)| addr.address.starts_with("2")).count() as u64;
+        let num_p2pkh_inputs = selected_utxos.len() as u64 - num_p2wpkh_inputs - num_p2sh_p2wpkh_inputs;
 
         // Destination output size based on destination address prefix
-        let dest_out_sz = if dest_address.starts_with("tb1q") { 31u64 } else { 34u64 };
+        let dest_out_sz = if dest_address.starts_with("tb1q") { 31u64 } else if dest_address.starts_with("2") { 32u64 } else { 34u64 };
         // Change output size based on our first address prefix
-        let change_out_sz = if self.addresses[0].address.starts_with("tb1q") { 31u64 } else { 34u64 };
+        let change_out_sz = if self.addresses[0].address.starts_with("tb1q") { 31u64 } else if self.addresses[0].address.starts_with("2") { 32u64 } else { 34u64 };
 
         // Assume there will be a change output; adjust later if change == 0
-        let mut estimated_size = num_p2pkh_inputs * 148 + num_p2wpkh_inputs * 68 + dest_out_sz + change_out_sz + 10;
+        let mut estimated_size = num_p2pkh_inputs * 148 + num_p2wpkh_inputs * 68 + num_p2sh_p2wpkh_inputs * 91 + dest_out_sz + change_out_sz + 10;
         let fee = estimated_size * fee_rate;
 
         println!("Selected {} UTXOs", selected_utxos.len());
@@ -461,7 +464,7 @@ impl Wallet {
             });
         } else {
             // Re-estimate fee without change output
-            estimated_size = num_p2pkh_inputs * 148 + num_p2wpkh_inputs * 68 + dest_out_sz + 10;
+            estimated_size = num_p2pkh_inputs * 148 + num_p2wpkh_inputs * 68 + num_p2sh_p2wpkh_inputs * 91 + dest_out_sz + 10;
             let new_fee = estimated_size * fee_rate;
             if total_value < amount + new_fee {
                 println!("Failed to send transaction: Insufficient funds after fee re-estimation");
@@ -564,6 +567,48 @@ impl Wallet {
 
                     // For native segwit P2WPKH: empty script_sig, witness = [sig, pubkey]
                     tx.input[i].script_sig = ScriptBuf::new();
+                    tx.input[i].witness.push(sig_bytes);
+                    tx.input[i].witness.push(pubkey_bytes);
+                }
+                Some(bitcoin::AddressType::P2sh) => {
+                    // Treat as P2SH-P2WPKH if redeemScript matches a P2WPKH program
+                    // Build P2WPKH scriptCode (same as native) for sighash
+                    let derived_pubkey_hash = bitcoin::PubkeyHash::from_byte_array(
+                        hash160::Hash::hash(&pubkey.inner.serialize()).to_byte_array()
+                    );
+                    let script_code = bitcoin::script::Builder::new()
+                        .push_opcode(bitcoin::opcodes::all::OP_DUP)
+                        .push_opcode(bitcoin::opcodes::all::OP_HASH160)
+                        .push_slice(derived_pubkey_hash)
+                        .push_opcode(bitcoin::opcodes::all::OP_EQUALVERIFY)
+                        .push_opcode(bitcoin::opcodes::all::OP_CHECKSIG)
+                        .into_script();
+
+                    let mut cache = SighashCache::new(&tx);
+                    let sighash = match cache.p2wpkh_signature_hash(i, &script_code, Amount::from_sat(utxo.value), EcdsaSighashType::All) {
+                        Ok(sighash) => sighash,
+                        Err(_) => {
+                            println!("Failed to create segwit sighash for P2SH-P2WPKH input {}", i);
+                            return Err(WalletError::TransactionFailed);
+                        }
+                    };
+                    let msg = Message::from_digest_slice(sighash.as_ref()).map_err(|_| WalletError::TransactionFailed)?;
+                    let sig = secp.sign_ecdsa(&msg, &private_key.inner);
+                    let mut sig_bytes = sig.serialize_der().to_vec();
+                    sig_bytes.push(EcdsaSighashType::All as u8);
+                    let pubkey_bytes = pubkey.inner.serialize();
+
+                    // Build redeemScript (witness program): 0 <20-byte-pubkeyhash>
+                    let redeem_script = bitcoin::script::Builder::new()
+                        .push_opcode(bitcoin::opcodes::all::OP_PUSHBYTES_0)
+                        .push_slice(derived_pubkey_hash)
+                        .into_script();
+                    // For P2SH-P2WPKH, scriptSig must push the redeemScript bytes as data
+                    tx.input[i].script_sig = bitcoin::script::Builder::new()
+                        .push_slice(bitcoin::script::PushBytesBuf::try_from(redeem_script.as_bytes().to_vec()).unwrap())
+                        .into_script();
+
+                    // Witness stack same as P2WPKH
                     tx.input[i].witness.push(sig_bytes);
                     tx.input[i].witness.push(pubkey_bytes);
                 }

@@ -164,7 +164,6 @@ const GAP_LIMIT: u32 = 20; // Change this value
 
 - [x] SegWit support (P2WPKH) - ✅ **COMPLETED**
 - [ ] P2SH-P2WPKH support
-- [ ] Hardware wallet integration
 - [x] Lightning Node (Testnet) via LDK Node
 - [ ] Advanced multi-signature features (time-locks, threshold signatures)
 
